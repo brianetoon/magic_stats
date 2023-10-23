@@ -1,5 +1,6 @@
 function App() {
   const links = [
+    {name: 'Trello Workspace', url: 'https://trello.com/b/UPAoSil2/magic-stats-are-magical'},
     {name: 'Github Repo', url: 'https://github.com/Jamandella/magic_stats'},
     {name: 'Figma Wireframe', url: 'https://www.figma.com/file/YqYaigEWARHy5NL5g08Kpq/Magic-Stats-Project?type=whiteboard&t=UKJd6ZK53VYmdl8B-0'},
     {name: 'Meeting Notes', url: 'https://drive.google.com/drive/folders/126ZhLhKfrLapQaeJPCU4REnxilpgR3qA'},
@@ -11,7 +12,7 @@ function App() {
   
   return (
     <div className="container">
-      <h1 className="accent-text">Magic Stats</h1>
+      <h1 className="accent-text">23 Spells</h1>
       <h2>Our Objective</h2>
       <p>The goal of this project is to provide Magic: the Gathering draft achetype stats. 
         To accomplish this we will be using data from Magic Arena drafts provided by 17 Lands. 
