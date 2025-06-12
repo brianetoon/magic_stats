@@ -1,132 +1,108 @@
 import pandas as pd
-import numpy as np
-from sklearn.decomposition import PCA
-from sklearn.cluster import  AgglomerativeClustering
-from sklearn.decomposition import PCA
+from sklearn.cluster import SpectralCoclustering
+from statfunctions import cardsInHand
+from stataccess import cardInfo
 
+def findLands(set_abbr):
+    card_df=cardInfo(set_abbr=set_abbr,as_json=False)
+    filter=['L' in card_df['card_type'].iloc[n] for n in range(card_df.shape[0])]
+    land_names=card_df.loc[filter]['name'].to_list()
+    return land_names
 
-def getDeckColumnsFromGameDF(gamesDF:pd.DataFrame):
+def getDeckColumnsFromGameDF(set_abbr, gamesDF, include_names=False,ignore_lands=False):
+    card_names=[]
     deck_cols=[]
-    for col in gamesDF.columns:
-        if col[:5]=='deck_':
-            deck_cols.append(col)
-    return deck_cols
-def makeDeckTDistanceMatrix(clusterDecks:dict):
-    #Returns a matrix where the entry in position i,j is a measure of how different the deck lists in cluster i and cluster j are. 
-    n_clusters=len(clusterDecks)
-    deck_dist_matrix=np.zeros(shape=(n_clusters,n_clusters))
-    deck_means=[]
-    deck_vars=[]
-    for i in range(n_clusters):
-        statDF=clusterDecks[i].describe()
-        deck_means.append(statDF.loc['mean'])
-        deck_vars.append(statDF.loc['std']**2)
-    for i in range(n_clusters):
-        for j in range(i+1,n_clusters):
-            deck_dist_ij=round((((deck_means[i]-deck_means[j])**2/(deck_vars[i]+deck_vars[j])).sum())**.5,3)
-            deck_dist_matrix[i,j]=deck_dist_ij
-            deck_dist_matrix[j,i]=deck_dist_ij
-    return deck_dist_matrix
+    if ignore_lands:
+        land_names=findLands(set_abbr)
+        land_cols=['deck_'+name for name in land_names]
+        for col in gamesDF.columns:
+            if col[:5]=='deck_' and (col not in land_cols):
+                deck_cols.append(col)
+                card_names.append(col[5:])
+    else:
+        for col in gamesDF.columns:
+            if col[:5]=='deck_':
+                deck_cols.append(col)
+                card_names.append(col[5:])
+    if include_names:
+        return card_names,deck_cols
+    else: return deck_cols
 
-def pcaWardByDraft(gamesDF:pd.DataFrame,n_components:int, n_clusters:int):
-    #Given a dataframe of games, sorts them into n_clusters groups. 
-    #Does so by first grouping the games by draft and reducing decklists to n_components dimensions using PCA algorithm.
-    #Then runs a clustering algorithm on the lower dimensional data.
-    #Assigns a label to each game in the dataframe based on which group the corresponding draft got assigned.
-    pca=PCA(n_components=n_components)
-    deck_cols=getDeckColumnsFromGameDF(gamesDF)
-    deck_cols.append('draft_id')
-    deckDataDF=gamesDF.loc[:,deck_cols].groupby('draft_id').mean() #make one deck list per draft by averaging over the games
-    transformed_data=pca.fit_transform(deckDataDF.values)
-    agg = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
-    agg.fit(transformed_data)
-    draftLabels=pd.DataFrame(data={'label':list(agg.labels_)},index=deckDataDF.index)
-    gamesDF=gamesDF.join(other=draftLabels,on='draft_id')
-    return gamesDF
-
-def aggGrouping(distMatrix:np.ndarray,threshold:float,linkage='complete'):
-    #Groups the subclusters together to form larger clusters based on the distances in distMatrix 
-    #With linkage=complete, threshold can be understood as the maximum allowable distance between two subclusters in the same grouping
-    agg=AgglomerativeClustering(metric='precomputed',distance_threshold=threshold,linkage=linkage,compute_full_tree=True,n_clusters=None)
-    labels=agg.fit_predict(distMatrix)
-    label_series=pd.Series(data=labels)
-    label_series.sort_values(inplace=True)
-    return label_series
-    #Notes: linkage=ward, average, and complete all yield decent results, with different reasonable ranges of threshold
- 
-def makeClusterDecks(gamesDF:pd.DataFrame):
-    #Given a dataframe of labeled games, returns a dict where the keys are the labels
-    #and values are dataframes of decklists with that label.
-    clusterDecks={}
-    n_clusters=gamesDF['label'].max()+1
-    deck_cols=getDeckColumnsFromGameDF(gamesDF)
-    for i in range(n_clusters):
-        clusterDF=gamesDF[gamesDF['label']==i]
-        clusterDecks[i]=clusterDF.loc[:,deck_cols]
-    return clusterDecks
-def reclustering(deck_dist_matrix:np.ndarray,n_clusters:int):
-    #Find the best grouping of subclusters into larger clusters
-    #Note: This step has the most room for change and improvement. There are several other methods I would like to test out.
-    distances=deck_dist_matrix.reshape(-1)
-    value_list=distances.tolist()
-    value_list.sort()
-    value_list=[value_list[i] for i in range(n_clusters,n_clusters**2,2)] #removes 0s and duplicate values.
-    median=np.median(value_list)
-    #Scan through thresholds for aggGrouping near the median to look for the one that provides the desired number of groups (2-5)
-    #that is the most stable, i.e. the same grouping occurs for a wide range of thresholds.
-    best_run_length=0
-    current_run=0
-    previous=aggGrouping(distMatrix=deck_dist_matrix,threshold=median-.5)
-    best_grouping=previous
-    for i in range(15):
-        threshold=median-.4+.1*i
-        grouping=aggGrouping(distMatrix=deck_dist_matrix,threshold=threshold)
-        if grouping==previous and i<14:
-            current_run+=.1
-        else:
-            previous=grouping
-            if current_run>=best_run_length:
-                num_groups=grouping.max()+1
-                if num_groups>=2 and num_groups<=5:
-                    best_grouping=grouping
-                    best_run_length=current_run
-            current_run=0
-    if best_grouping.max()>4: #If the above range didn't narrow things down to 5 or less archetypes, keep going
-        best_run_length=0
-        current_run=0
-        previous=aggGrouping(distMatrix=deck_dist_matrix,threshold=median+1)
-        best_grouping=previous
-        for i in range(10):
-            threshold=median+1+.1*i
-            grouping=aggGrouping(distMatrix=deck_dist_matrix,threshold=threshold)
-            if grouping==previous and i<9:
-                current_run+=.1
-            else:
-                previous=grouping
-                if current_run>=best_run_length:
-                    num_groups=grouping.max()+1
-                    if num_groups>=2 and num_groups<=5:
-                        best_grouping=grouping
-                        best_run_length=current_run
-                current_run=0
-    return best_grouping
-
-def assignClusterLabels(gamesDF:pd.DataFrame):
+def makeMultipleCoclusterings(set_abbr,game_df:pd.DataFrame, num_runs_per:int,max_clusters:int):
+    """Returns a dict of coclustering objects where the keys are the run numbers."""
+    deck_cols_without_lands=getDeckColumnsFromGameDF(set_abbr=set_abbr,gamesDF=game_df,ignore_lands=True)
+    deck_data=game_df.loc[:,deck_cols_without_lands]
+    deck_data=deck_data.loc[deck_data.sum(axis=1)>0]
+    deck_data=deck_data.loc[:,deck_data.sum(axis=0)>0]
+    runs={}
+    for n_clusters in range(2,max_clusters+1):
+        for n in range(num_runs_per):
+            index= (n_clusters-2)*num_runs_per+n
+            coclustering=SpectralCoclustering(n_clusters=n_clusters)
+            coclustering.fit(deck_data.values)
+            runs[index]=coclustering
+    return runs
+def turnRunsIntoLabels(runs:dict):
+    """Returns a dict of labels where the keys are the run numbers."""
+    labels={}
+    for n in runs.keys():
+        labels[n]=runs[n].row_labels_
+    return labels
+def chi2WinsInHand2(wins_in_hand:pd.DataFrame,game_df:pd.DataFrame,games_in_hand:pd.DataFrame,labels:pd.Series,min_games=300):
+    #compares number of wins in hand against expected wins in hand for each card in each label.
+    #expected wins in hand is based on total number of wins per label and number of games in hand per card in each label.
+    basics=['Plains','Island','Swamp','Mountain','Forest'] #Exclude basic lands from the analysis. May want to consider excluding all lands.
+    wih=wins_in_hand.copy()
+    gih=games_in_hand.copy()
+    for b in basics:
+        if b in wih.columns: wih.drop(columns=b,inplace=True)
+        if b in gih.columns: gih.drop(columns=b,inplace=True)
+    total_gih=gih.sum(axis=0)
+    card_filter=total_gih.index[total_gih>min_games]
+    gih=gih[card_filter]
+    wih=wih[card_filter]
+    temp_game_df=game_df.copy()
+    temp_game_df['label']=labels
+    win_rates=temp_game_df.groupby('label')['won'].mean()
+    weights=gih.T*win_rates
+    weights=weights.T/(weights.sum(axis=1).T)
+    total_wih=wih.sum(axis=0)
+    expected_wih=total_wih*weights
+    chi2_components=(((wih-expected_wih)**2)/(expected_wih.mask(expected_wih==0,1))).sum(axis=0)
+    chi2=chi2_components.sum()
+    return chi2
+def makeHandStatsByLabel(hand_df:pd.DataFrame,games_df:pd.DataFrame,labels):
+    #Finds the number of games in hand and wins in hand of each card for each label.
+    hand_df=hand_df.gt(0)
+    hand_df['label']=labels
+    games_df['label']=labels
+    hand_win_df=hand_df[games_df['won']==1]
+    games_in_hand=hand_df.groupby('label').sum()
+    wins_in_hand=hand_win_df.groupby('label').sum()
+    return games_in_hand,wins_in_hand
+def findBestRun(game_df:pd.DataFrame,labels:dict,num_runs_per:int):
+    score_df=pd.DataFrame({'chi2':[],'adj_c2':[]})
+    hand_df=cardsInHand(game_df)
+    for i in range(len(labels)):
+        gih,wih=makeHandStatsByLabel(hand_df=hand_df,games_df=game_df,labels=labels[i])
+        c2=chi2WinsInHand2(wins_in_hand=wih,games_in_hand=gih,game_df=game_df,labels=labels[i])
+        score_df.loc[i]=[c2,c2/(i//num_runs_per+2)]
+    best_run=score_df['adj_c2'].idxmax()
+    return best_run
+def assignClusterLabels(set_abbr,gamesDF:pd.DataFrame):
     #Starting with a dataframe of games from game_data, group them by archetype.
     #Appends a column of labels to the dataframe that indicates each game's archetype.
+    #Runs coclustering multiple times, varying the number of clusters.
+    #Identifies the best run based on chi2 of wins in hand, which is intended to measure
+    #how significantly the relative value of cards differs between archetypes.
     n_games=gamesDF.shape[0]
-    n_clusters=min(n_games//6000,12)
-    if n_clusters>1: 
+    max_n_clusters=min(n_games//2000,6)
+    if max_n_clusters>1: 
         gamesDFTemp=gamesDF.copy()
-        gamesDFTemp=pcaWardByDraft(gamesDF=gamesDFTemp,n_components=5,n_clusters=n_clusters) 
-        #May want to vary n_components in the future. Experimentally, 5 has looked best so far.
-        if n_clusters>2:
-            clusterDecks=makeClusterDecks(gamesDF)
-            deck_dist_matrix=makeDeckTDistanceMatrix(clusterDecks)
-            grouping=reclustering(deck_dist_matrix=deck_dist_matrix,n_clusters=n_clusters) 
-            final_labels=gamesDFTemp['label'].apply(lambda x: grouping.loc[x])
-        else:
-            final_labels=gamesDFTemp['label']
+        runs=makeMultipleCoclusterings(set_abbr=set_abbr,game_df=gamesDFTemp,num_runs_per=8,max_clusters=max_n_clusters)
+        labels=turnRunsIntoLabels(runs=runs)
+        best_run=findBestRun(game_df=gamesDFTemp,labels=labels,num_runs_per=8)
+        final_labels=labels[best_run]
         gamesDF['label']=final_labels
     else: 
         gamesDF['label']=pd.Series(data=[0]*gamesDF.shape[0])
