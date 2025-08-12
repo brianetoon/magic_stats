@@ -164,7 +164,7 @@ def scrape_page(set_abbr,names,maxID=400)->dict:
                 names.remove(leftovers[alphaname])
                 leftovers.pop(alphaname)    
         if len(names)>0:
-            bonus_sheets={'bro':'brr','woe':'wot'}
+            bonus_sheets={'bro':'brr','woe':'wot','fin':'fca'}
             list_sets={'mkm'}
             if set_abbr in bonus_sheets.keys():
                 max_id=max(card_info.keys())
